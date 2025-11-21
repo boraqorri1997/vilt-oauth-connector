@@ -1,4 +1,4 @@
-require('dotenv').config(); //to load env variables
+require('dotenv').config();
 
 // index.js
 const express = require("express");
