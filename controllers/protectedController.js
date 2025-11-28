@@ -187,6 +187,153 @@ exports.cancelSession = async (req, res) => {
     res.status(500).json(err(50012, "cancel_session_failed"));
   }
 };
+
+/**
+ * POST /api/launchsession
+ * Body must include { SessionId, CorpId (optional) }.
+ * 200: { JoinUrl, CorpId, IsSuccessful, Message }
+ */
+exports.launchSession = async (req, res) => {
+  const ctx = await validateBearerToken(req, res);
+  if (!ctx) return;
+  const { db, coll, client } = ctx;
+
+  const body = req.body || {};
+  const sessionId = body.SessionId && String(body.SessionId).trim();
+  if (!sessionId) {
+    return res.status(400).json(err(40030, "SessionId is required"));
+  }
+
+  try {
+    // First check if the session exists
+    const clientDoc = await coll.findOne(
+      { 
+        clientId: client.clientId, 
+        clientSecret: client.clientSecret,
+        "sessions.sessionId": sessionId 
+      }
+    );
+
+    if (!clientDoc || !clientDoc.sessions || !clientDoc.sessions.find(s => s.sessionId === sessionId)) {
+      return res.status(404).json(err(40430, "session_not_found"));
+    }
+
+    // Use the CorpId from the request or default to a client-based ID if not provided
+    const corpId = (body.CorpId && String(body.CorpId).trim()) || 
+                   `${client.clientId}-stargate`;
+
+    // Record the launch attempt in the database
+    await coll.updateOne(
+      { clientId: client.clientId, clientSecret: client.clientSecret, "sessions.sessionId": sessionId },
+      {
+        $set: {
+          "sessions.$.status": "launched",
+          "sessions.$.updatedAt": nowIso(),
+          "sessions.$.launchRequest": body,
+          "sessions.$.joinUrl": "https://teams.microsoft.com" // Example URL
+        },
+        $inc: { "perEndpointUsage.launchsession": 1 }
+      }
+    );
+
+    // Return the Vilt Azure Connector style response
+    res.status(200).json({
+      JoinUrl: "https://teams.microsoft.com",
+      CorpId: corpId,
+      IsSuccessful: true,
+      Message: "Launched successfully"
+    });
+  } catch (e) {
+    console.error("launchSession failed:", e);
+    res.status(500).json(err(50015, "launch_session_failed"));
+  }
+};
+
+/**
+ * POST /api/getattendance
+ * Body must include { SessionId }.
+ * 200: { AttendeeList, IsSuccessful, Message, CorrelationId }
+ */
+exports.getAttendance = async (req, res) => {
+  const ctx = await validateBearerToken(req, res);
+  if (!ctx) return;
+  const { db, coll, client } = ctx;
+
+  const body = req.body || {};
+  const sessionId = body.SessionId && String(body.SessionId).trim();
+  if (!sessionId) {
+    return res.status(400).json(err(40040, "SessionId is required"));
+  }
+
+  try {
+    // Find the client document and the specific session
+    const clientDoc = await coll.findOne(
+      { 
+        clientId: client.clientId, 
+        clientSecret: client.clientSecret
+      }
+    );
+
+    if (!clientDoc || !clientDoc.sessions) {
+      return res.status(404).json(err(40440, "session_not_found"));
+    }
+
+    const session = clientDoc.sessions.find(s => s.sessionId === sessionId);
+    if (!session) {
+      return res.status(404).json(err(40441, "session_not_found"));
+    }
+
+    // Record the attendance request
+    await coll.updateOne(
+      { clientId: client.clientId, clientSecret: client.clientSecret, "sessions.sessionId": sessionId },
+      {
+        $set: {
+          "sessions.$.lastAttendanceRequest": body,
+          "sessions.$.lastAttendanceRequestTime": nowIso()
+        },
+        $inc: { "perEndpointUsage.getattendance": 1 }
+      }
+    );
+
+    // Check if launchSession has been called for this session
+    const isLaunched = session.status === "launched" || session.launchRequest;
+    
+    let attendees;
+    let message;
+    
+    if (isLaunched) {
+      // If session was launched, return instructor email as attendee
+      // Find the instructor from the client document
+      const instructor = clientDoc.instructors && clientDoc.instructors.length > 0 
+        ? clientDoc.instructors[0] 
+        : null;
+        
+      attendees = instructor && instructor.email 
+        ? [instructor.email] 
+        : ["default.instructor@example.com"];
+        
+      message = "Session was launched, returning instructor as attendee";
+    } else {
+      // If session was not launched, return default message
+      attendees = [];
+      message = "No attendance data available - session has not been launched";
+    }
+
+    const correlationId = uuid();
+
+    // Return the attendance response
+    res.status(200).json({
+      AttendeeList: attendees,
+      IsSuccessful: true,
+      Message: message,
+      CorrelationId: correlationId
+    });
+  } catch (e) {
+    console.error("getAttendance failed:", e);
+    res.status(500).json(err(50016, "get_attendance_failed"));
+  }
+};
+
 /**
  * POST /api/addinstructor
  * Body = Instructor payload with fields like Email, FirstName, LastName, etc.
