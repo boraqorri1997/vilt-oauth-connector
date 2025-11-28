@@ -31,6 +31,8 @@ app.get("/admin/tokens", admin.tokens);
 app.post("/api/createsession", protectedController.createSession);
 app.post("/api/updatesession", protectedController.updateSession);
 app.post("/api/cancelsession", protectedController.cancelSession);
+app.post("/api/launchsession", protectedController.launchSession);
+app.post("/api/getattendance", protectedController.getAttendance);
 
 // New instructor endpoint
 app.post("/api/addinstructor", protectedController.addInstructor);
